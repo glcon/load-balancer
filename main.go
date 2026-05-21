@@ -27,6 +27,9 @@ func main() {
 	// choose either rr or p2c
 	var lb LoadBalancer = NewP2CLB(backends)
 
+	// run health checker
+	startHealthCheck(backends, 2)
+
 	serverHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		backend := lb.Next()
 		if backend == nil {

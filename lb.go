@@ -1,7 +1,7 @@
 package main
 
 import (
-	"math/rand"
+	"math/rand/v2"
 	"sync/atomic"
 )
 
@@ -51,11 +51,11 @@ func (p *P2CLB) Next() *Backend {
 	}
 
 	// pick two random ones, cannot be equal
-	// in go 1.25.x rand.Intn is by default thread-safe
-	index1 := rand.Intn(numBackends)
-	index2 := rand.Intn(numBackends)
+	// math/rand/v2 is by default thread-safe
+	index1 := rand.IntN(numBackends)
+	index2 := rand.IntN(numBackends)
 	for index1 == index2 {
-		index2 = p.rand.Intn(numBackends)
+		index2 = rand.IntN(numBackends)
 	}
 
 	backend1 := p.backends[index1]

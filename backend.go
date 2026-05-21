@@ -14,6 +14,7 @@ type Backend struct {
 	URL               *url.URL
 	ReverseProxy      *httputil.ReverseProxy
 	ActiveConnections int64
+	Alive             atomic.Bool
 }
 
 type ErrorResponse struct {
@@ -41,10 +42,15 @@ func NewBackend(rawURL string) (*Backend, error) {
 
 	proxy.ErrorHandler = customErrorHandler
 
-	return &Backend{
+	b := &Backend{
 		URL:          target,
 		ReverseProxy: proxy,
-	}, nil
+	}
+
+	// .Store: special method for atomic bool
+	b.Alive.Store(true)
+
+	return b, nil
 }
 
 func (b *Backend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
