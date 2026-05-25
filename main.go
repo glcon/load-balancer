@@ -1,37 +1,42 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"time"
 )
 
 func main() {
-	// define some backends
-	backendURLs := []string{
-		"http://localhost:8081",
-		"http://localhost:8082",
-		"http://localhost:8083",
+	configPath := "./config.json"
+
+	// Get user config
+	masterConfig, err := loadConfig(configPath)
+	if err != nil {
+		log.Printf("Failed to load config.json")
+		log.Fatal(err)
 	}
 
-	var backends []*Backend
-	for _, url := range backendURLs {
-		b, err := NewBackend(url)
-		if err != nil {
-			log.Fatalf("Failed to make Backend struct for %v", url)
-		}
-
-		backends = append(backends, b)
+	// Establish a registry of backends
+	reg, err := makeRegistry(masterConfig.Backends)
+	if err != nil {
+		log.Printf("Failed to make the backend registry.")
+		log.Fatal(err)
 	}
 
-	// choose either rr or p2c
-	var lb LoadBalancer = NewP2CLB(backends)
+	// Start the signal handler for hot swapping
+	ctx, signalHandlerCancel := context.WithCancel(context.Background())
+	defer signalHandlerCancel()
 
-	// run health checker
-	startHealthCheck(backends, 2)
+	startSignalHandler(ctx, reg, configPath)
+
+	// Instantiate load balancer
+	lb := &P2CLB{
+		Registry: reg,
+	}
 
 	serverHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		backend := lb.Next()
+		backend := lb.SelectBackend()
 		if backend == nil {
 			log.Printf("No backends available")
 			return
@@ -47,10 +52,13 @@ func main() {
 		WriteTimeout: 10 * time.Second,
 	}
 
-	log.Printf("Load balancer started on :8080\n")
-	log.Printf("there are %v backends", len(backends))
+	snapShot := reg.value.Load().(*Snapshot)
+	numBackends := len(snapShot.PointerList)
 
-	err := server.ListenAndServe()
+	log.Printf("Load balancer started on :8080\n")
+	log.Printf("there are %v backends", numBackends)
+
+	err = server.ListenAndServe()
 	if err != nil {
 		log.Fatal(err)
 	}

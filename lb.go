@@ -2,70 +2,62 @@ package main
 
 import (
 	"math/rand/v2"
-	"sync/atomic"
 )
 
-type LoadBalancer interface {
-	Next() *Backend
-}
-
-type RoundRobinLB struct {
-	backends []*Backend
-	counter  int64
-}
-
-func NewRoundRobinLB(bs []*Backend) *RoundRobinLB {
-	return &RoundRobinLB{backends: bs}
-}
-
-func (rr *RoundRobinLB) Next() *Backend {
-	if len(rr.backends) == 0 {
-		return nil
-	}
-
-	// starts at second backend, atomic to prevent contention
-	index := atomic.AddInt64(&rr.counter, 1) % int64(len(rr.backends))
-
-	return rr.backends[index]
-}
-
 type P2CLB struct {
-	backends []*Backend
-	rand     *rand.Rand
+	Registry *BackendResigtry
 }
 
-func NewP2CLB(bs []*Backend) *P2CLB {
-	return &P2CLB{
-		backends: bs,
-	}
-}
+func (p *P2CLB) SelectBackend() *Backend {
+	snapShot := p.Registry.value.Load().(*Snapshot)
+	backendList := snapShot.PointerList
 
-func (p *P2CLB) Next() *Backend {
-	numBackends := len(p.backends)
-
-	if numBackends == 0 {
+	// 0 or 1 backends
+	listLen := len(backendList)
+	if listLen == 0 {
 		return nil
 	}
-	if numBackends == 1 {
-		return p.backends[0]
+	if listLen == 1 {
+		b := backendList[0]
+
+		if b.IsAvailable() {
+			return b
+		}
+		return nil
 	}
 
-	// pick two random ones, cannot be equal
-	// math/rand/v2 is by default thread-safe
-	index1 := rand.IntN(numBackends)
-	index2 := rand.IntN(numBackends)
-	for index1 == index2 {
-		index2 = rand.IntN(numBackends)
+	// three attempts to find a healthy balancer
+	for attempt := 0; attempt < 3; attempt++ {
+		index1 := rand.IntN(listLen)
+		index2 := rand.IntN(listLen)
+		if index1 == index2 {
+			index2 = (index2 + 1) % listLen
+		}
+
+		b1 := backendList[index1]
+		b2 := backendList[index2]
+
+		if b1.IsAvailable() && b2.IsAvailable() {
+			if b1.EWMA.Load() < b2.EWMA.Load() {
+				return b1
+			}
+			return b2
+		}
+
+		if b1.IsAvailable() {
+			return b1
+		}
+		if b2.IsAvailable() {
+			return b2
+		}
 	}
 
-	backend1 := p.backends[index1]
-	backend2 := p.backends[index2]
+	return nil
+}
 
-	if atomic.LoadInt64(&backend1.ActiveConnections) >=
-		atomic.LoadInt64(&backend2.ActiveConnections) {
-		return backend2
-	} else {
-		return backend1
+func (b *Backend) IsAvailable() bool {
+	if b.Alive.Load() && b.CircuitState.Load() == stateClosed {
+		return true
 	}
-
+	return false
 }
