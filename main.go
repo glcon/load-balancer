@@ -4,10 +4,39 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"net/http/httputil"
+	"sync"
 	"time"
 )
 
 func main() {
+	ctx, signalHandlerCancel := context.WithCancel(context.Background())
+	defer signalHandlerCancel()
+
+	lb := Startup(ctx)
+
+	globalProxy := EstablishTransport(lb)
+
+	server := &http.Server{
+		Addr:         ":8080",
+		Handler:      globalProxy,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+
+	log.Printf("Load balancer started on :8080\n")
+
+	// TAKE OUT LATER
+	numBackends := len(lb.Registry.value.Load().(*Snapshot).PointerList)
+	log.Printf("there are %v backends", numBackends)
+
+	err := server.ListenAndServe()
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func Startup(ctx context.Context) *P2CLB {
 	configPath := "./config.json"
 
 	// Get user config
@@ -25,41 +54,50 @@ func main() {
 	}
 
 	// Start the signal handler for hot swapping
-	ctx, signalHandlerCancel := context.WithCancel(context.Background())
-	defer signalHandlerCancel()
-
 	startSignalHandler(ctx, reg, configPath)
 
-	// Instantiate load balancer
 	lb := &P2CLB{
 		Registry: reg,
 	}
 
-	serverHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		backend := lb.SelectBackend()
-		if backend == nil {
-			log.Printf("No backends available")
-			return
-		}
+	return lb
+}
 
-		backend.ServeHTTP(w, r)
-	})
+func EstablishTransport(lb *P2CLB) *httputil.ReverseProxy {
+	// error handler
+	errorFunc := func(w http.ResponseWriter, r *http.Request, err error) {
+		log.Printf("All retry attempts exhausted. Final Proxy Error: %v", err)
 
-	server := &http.Server{
-		Addr:         ":8080",
-		Handler:      serverHandler,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		// Send json to user for error
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte(`{"error": "Bad Gateway", "message": "All backends failed to respond."}`))
 	}
 
-	snapShot := reg.value.Load().(*Snapshot)
-	numBackends := len(snapShot.PointerList)
-
-	log.Printf("Load balancer started on :8080\n")
-	log.Printf("there are %v backends", numBackends)
-
-	err = server.ListenAndServe()
-	if err != nil {
-		log.Fatal(err)
+	globalProxy := &httputil.ReverseProxy{
+		Transport: &Transport{LB: lb},
+		Director: func(req *http.Request) {
+			req.Header.Set("X-Proxy-Source", "balancer")
+		},
+		ErrorHandler: errorFunc,
+		BufferPool:   bytesPool{},
 	}
+
+	return globalProxy
+}
+
+var proxyBufferPool = sync.Pool{
+	New: func() any {
+		return make([]byte, 32*1024)
+	},
+}
+
+type bytesPool struct{}
+
+func (bp bytesPool) Get() []byte {
+	return proxyBufferPool.Get().([]byte)
+}
+
+func (bp bytesPool) Put(b []byte) {
+	proxyBufferPool.Put(b)
 }

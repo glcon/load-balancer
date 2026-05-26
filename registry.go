@@ -52,7 +52,7 @@ func (reg *BackendResigtry) Update(newConfigs []BackendConfig) {
 
 	// Edit reconciled list
 	addNewBackends(reconciledMap, currentSet, newConfigs)
-	deleteOldBackends(reconciledMap, currentSet, newConfigs)
+	orphans := identifyOrphans(reconciledMap, currentSet, newConfigs)
 
 	// build standard list to store in snapshot
 	reconciledList := make([]*Backend, 0)
@@ -67,22 +67,30 @@ func (reg *BackendResigtry) Update(newConfigs []BackendConfig) {
 
 	// hot swap
 	reg.value.Store(s)
+
+	for _, orphan := range orphans {
+		orphan.Alive.Store(false)
+		go orphan.Drain()
+	}
 }
 
-func deleteOldBackends(reconciled map[string]*Backend, currentSet map[string]*Backend, newConfigs []BackendConfig) {
+func identifyOrphans(reconciled map[string]*Backend, currentSet map[string]*Backend, newConfigs []BackendConfig) []*Backend {
 	// build a hash map for O(1) lookup
 	newConfigsHash := make(map[string]struct{})
 	for _, cfg := range newConfigs {
 		newConfigsHash[cfg.ID] = struct{}{}
 	}
 
+	var orphans []*Backend
 	for id, backend := range currentSet {
 		_, ok := newConfigsHash[id]
 		if ok == false {
-			backend.Cancel() // logic should be expanded later to wind down
+			orphans = append(orphans, backend)
 			delete(reconciled, id)
 		}
 	}
+
+	return orphans
 }
 
 func addNewBackends(reconciled map[string]*Backend, currentSet map[string]*Backend, newConfigs []BackendConfig) {

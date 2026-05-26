@@ -2,12 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"log"
-	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"sync/atomic"
 	"time"
@@ -19,27 +15,26 @@ const (
 )
 
 type Backend struct {
-	ID                string
-	URL               *url.URL
-	Proxy             *httputil.ReverseProxy
+	ID        string
+	URL       *url.URL
+	Transport *http.Transport
+
+	// managed by the active health checker
 	Alive             atomic.Bool
 	ActiveConnections atomic.Int64
 	TotalRequests     atomic.Int64
 
-	// 0 is closed, 1 is open
+	// takes on either stateClosed or stateOpen
 	ConsecutiveFails atomic.Int64
 	LastRequest      atomic.Int64
 	EWMA             atomic.Int64
-	CircuitState     atomic.Int32
+
+	// tripped when user requests fail
+	CircuitState atomic.Int32
 
 	// each backend gets a small client for health pings
-	HealthClient http.Client
-	Cancel       context.CancelFunc
-}
-
-type ErrorResponse struct {
-	Error   string `json:"error"`
-	Message string `json:"message"`
+	HealthClient     http.Client
+	HealthLoopCancel context.CancelFunc
 }
 
 func NewBackend(cfg BackendConfig) (*Backend, error) {
@@ -48,39 +43,24 @@ func NewBackend(cfg BackendConfig) (*Backend, error) {
 		return nil, err
 	}
 
-	proxy := httputil.NewSingleHostReverseProxy(target)
-
-	// modify director function
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
-
-		req.Header.Set("X-Proxy-Source", "balancer")
-
-		// So dest. server recognizes the request
-		req.Host = target.Host
-	}
+	backendTransport := http.DefaultTransport.(*http.Transport).Clone()
+	backendTransport.MaxIdleConns = 1000
+	backendTransport.MaxIdleConnsPerHost = 100
+	backendTransport.IdleConnTimeout = 90 * time.Second
+	backendTransport.DisableCompression = true
+	backendTransport.ForceAttemptHTTP2 = true
 
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &Backend{
-		ID:     cfg.ID,
-		URL:    target,
-		Proxy:  proxy,
-		Cancel: cancel,
+		ID:               cfg.ID,
+		URL:              target,
+		Transport:        backendTransport,
+		HealthLoopCancel: cancel,
 		HealthClient: http.Client{
 			Transport: &http.Transport{
 				DisableKeepAlives: true,
 			},
 		},
-	}
-
-	proxy.ErrorHandler = customErrorHandler(b)
-
-	proxy.ModifyResponse = func(res *http.Response) error {
-		b.ConsecutiveFails.Store(0)
-
-		// return nil to leave the response unmodified
-		return nil
 	}
 
 	// Run the backend's personal health checking loop
@@ -89,17 +69,7 @@ func NewBackend(cfg BackendConfig) (*Backend, error) {
 	return b, nil
 }
 
-func (b *Backend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-
-	b.ActiveConnections.Add(1)
-	defer b.ActiveConnections.Add(-1)
-
-	b.Proxy.ServeHTTP(w, r)
-
-	latency := time.Since(start).Milliseconds()
-
-	// ensure emwa swap is atomic and up to date using a CAS
+func (b *Backend) UpdateEWMA(latency int64) {
 	for {
 		oldEWMA := b.EWMA.Load()
 		var newEWMA int64
@@ -121,48 +91,27 @@ func (b *Backend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-
-	b.LastRequest.Store(time.Now().UnixMilli())
-	b.TotalRequests.Add(1)
 }
 
-func customErrorHandler(b *Backend) func(w http.ResponseWriter, r *http.Request, e error) {
-	return func(w http.ResponseWriter, r *http.Request, e error) {
-		if errors.Is(e, context.Canceled) {
-			log.Printf("Proxy note: Client cancelled request to backend %v. Ignoring.", b.ID)
+func (b *Backend) Drain() {
+	timeout := time.After(15 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if b.ActiveConnections.Load() == 0 {
+			break
+		}
+
+		select {
+		case <-timeout:
+			log.Printf("Backend %v drain timeout. Forcing close.", b.ID)
+			b.HealthLoopCancel()
 			return
+		case <-ticker.C:
 		}
-
-		statusCode := http.StatusBadGateway
-		errMessage := "Backend is unreachable"
-
-		var netErr net.Error
-		if errors.As(e, &netErr) && netErr.Timeout() {
-			statusCode = http.StatusGatewayTimeout
-			errMessage = "Backend server timed out responding to request."
-		}
-
-		// circuit breaking logic
-		log.Printf("Proxy error on backend %s [%d]: %v", b.ID, statusCode, e)
-
-		fails := b.ConsecutiveFails.Add(1)
-
-		if fails >= 3 {
-			if b.CircuitState.CompareAndSwap(stateClosed, stateOpen) {
-				log.Printf("Circuit breaker tripped to OPEN for backend %v", b.ID)
-			}
-		}
-
-		// set headers and send response
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Proxy-Error", "true")
-		w.WriteHeader(statusCode)
-
-		givenError := ErrorResponse{
-			Error:   http.StatusText(statusCode),
-			Message: errMessage,
-		}
-
-		_ = json.NewEncoder(w).Encode(givenError)
 	}
+
+	b.HealthLoopCancel()
+	log.Printf("Backend %v drained successfully.", b.ID)
 }
