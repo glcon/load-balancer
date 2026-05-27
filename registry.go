@@ -68,6 +68,7 @@ func (reg *BackendResigtry) Update(newConfigs []BackendConfig) {
 	// hot swap
 	reg.value.Store(s)
 
+	// start shutting down AFTER the new registry is live
 	for _, orphan := range orphans {
 		orphan.Alive.Store(false)
 		go orphan.Drain()

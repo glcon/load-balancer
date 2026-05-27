@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -29,9 +30,10 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 
 		// dynamic routing
-		req.URL.Scheme = backend.URL.Scheme
-		req.URL.Host = backend.URL.Host
-		req.Host = backend.URL.Host
+		attemptReq := req.Clone(req.Context())
+		attemptReq.URL.Scheme = backend.URL.Scheme
+		attemptReq.URL.Host = backend.URL.Host
+		attemptReq.Host = backend.URL.Host
 
 		if attempt > 0 && req.Body != nil && req.GetBody != nil {
 			newBody, err := req.GetBody()
@@ -42,18 +44,35 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			req.Body = newBody
 		}
 
-		// run go standard roundtrip
 		start := time.Now()
 
-		backend.ActiveConnections.Add(1)
-		resp, err := backend.Transport.RoundTrip(req)
-		backend.ActiveConnections.Add(-1)
+		var resp *http.Response
+		var err error
 
-		latency := time.Since(start).Milliseconds() // returns an int64
+		func() {
+			// log connections for balancer and prometheus
+			backend.ActiveConnections.Add(1)
+			defer backend.ActiveConnections.Add(-1)
+
+			MetricsActiveConnections.WithLabelValues(backend.ID).Inc()
+			defer MetricsActiveConnections.WithLabelValues(backend.ID).Dec()
+
+			resp, err = backend.Transport.RoundTrip(attemptReq)
+		}()
+
+		latency := time.Since(start).Milliseconds() // returns an int64!!!!!
+
+		// latency histogram
+		MetricsRequestDuration.WithLabelValues(backend.ID).Observe(float64(latency))
 
 		if err != nil || isSoftFailure(resp) {
 			if resp != nil {
 				resp.Body.Close()
+				// track soft failure errors
+				MetricsRequestsTotal.WithLabelValues(backend.ID, strconv.Itoa(resp.StatusCode)).Inc()
+			} else {
+				// track network failures (timeouts, refused conns)
+				MetricsRequestsTotal.WithLabelValues(backend.ID, "network_error").Inc()
 			}
 
 			fails := backend.ConsecutiveFails.Add(1)
@@ -67,6 +86,8 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			lastErr = err
 			continue
 		}
+
+		MetricsRequestsTotal.WithLabelValues(backend.ID, strconv.Itoa(resp.StatusCode)).Inc()
 
 		// reaching here means success
 		backend.ConsecutiveFails.Store(0)

@@ -2,18 +2,36 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"sync"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
+	configPath := flag.String("config", "./config.yml", "Path to the load balancer config file")
+	flag.Parse()
+
+	// start prometheus
+	go func() {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
+		log.Println("Observability server started on :9090/metrics")
+
+		err := http.ListenAndServe(":9090", mux)
+		if err != nil {
+			log.Fatalf("Metrics server failed: %v", err)
+		}
+	}()
+
 	ctx, signalHandlerCancel := context.WithCancel(context.Background())
 	defer signalHandlerCancel()
 
-	lb := Startup(ctx)
+	lb := Startup(ctx, *configPath)
 
 	globalProxy := EstablishTransport(lb)
 
@@ -26,23 +44,17 @@ func main() {
 
 	log.Printf("Load balancer started on :8080\n")
 
-	// TAKE OUT LATER
-	numBackends := len(lb.Registry.value.Load().(*Snapshot).PointerList)
-	log.Printf("there are %v backends", numBackends)
-
 	err := server.ListenAndServe()
 	if err != nil {
 		log.Fatal(err)
 	}
 }
 
-func Startup(ctx context.Context) *P2CLB {
-	configPath := "./config.json"
-
+func Startup(ctx context.Context, configPath string) *P2CLB {
 	// Get user config
 	masterConfig, err := loadConfig(configPath)
 	if err != nil {
-		log.Printf("Failed to load config.json")
+		log.Printf("Failed to load config file")
 		log.Fatal(err)
 	}
 
@@ -86,6 +98,7 @@ func EstablishTransport(lb *P2CLB) *httputil.ReverseProxy {
 	return globalProxy
 }
 
+// byte pools that the proxy can reuse
 var proxyBufferPool = sync.Pool{
 	New: func() any {
 		return make([]byte, 32*1024)

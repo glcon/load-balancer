@@ -22,7 +22,7 @@ func (b *Backend) Ping() {
 		return
 	}
 
-	// create a local client -> doesn't compete with the balancer
+	// local client doesn't compete with the balancer
 	response, err := b.HealthClient.Do(request)
 	if err != nil {
 		b.updateStatus(false)
@@ -41,7 +41,7 @@ func (b *Backend) Ping() {
 func (b *Backend) updateStatus(isAlive bool) {
 	// Set isAlive
 	if b.Alive.CompareAndSwap(!isAlive, isAlive) {
-		log.Printf("Backend %v status changed to %v", b.URL.String(), isAlive)
+		log.Printf("Backend %v is ALIVE: %v", b.ID, isAlive)
 	}
 
 	// Set the breaker back to closed if its open

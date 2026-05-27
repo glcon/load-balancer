@@ -1,0 +1,13 @@
+listen_addr: ":8080"
+health_check_interval: 5
+backends:
+  - id: "backend-1"
+    url: "http://backend1:5678"
+  - id: "backend-2"
+    url: "http://backend2:5678"
+  - id: "backend-3"
+    url: "http://backend3:5678"
+  - id: "backend-4"
+    url: "http://backend4:5678"
+  - id: "backend-5"
+    url: "http://backend5:5678"

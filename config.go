@@ -2,23 +2,24 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"gopkg.in/yaml.v3"
 )
 
 type BackendConfig struct {
-	ID  string `json:"id"`
-	URL string `json:"url"`
+	ID  string `yaml:"id"`
+	URL string `yaml:"url"`
 }
 
-// stuff straight from json file
+// stuff straight from yml file
 type MasterConfig struct {
-	ListenAddr          string          `json:"listen_addr"`
-	HealthCheckInterval int             `json:"health_check_interval"`
-	Backends            []BackendConfig `json:"backends"`
+	ListenAddr          string          `yaml:"listen_addr"`
+	HealthCheckInterval int             `yaml:"health_check_interval"`
+	Backends            []BackendConfig `yaml:"backends"`
 }
 
 func loadConfig(configPath string) (*MasterConfig, error) {
@@ -28,7 +29,7 @@ func loadConfig(configPath string) (*MasterConfig, error) {
 	}
 
 	var cfg MasterConfig
-	err = json.Unmarshal(data, &cfg)
+	err = yaml.Unmarshal(data, &cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +54,7 @@ func startSignalHandler(ctx context.Context, reg *BackendResigtry, configPath st
 				return
 
 			case <-sigChan:
-				log.Println("SIGHUP received. Reloading config.json.")
+				log.Println("SIGHUP received. Reloading config.")
 
 				masterConfig, err := loadConfig(configPath)
 				if err != nil {
