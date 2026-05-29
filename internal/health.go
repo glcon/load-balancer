@@ -2,7 +2,7 @@ package internal
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"time"
@@ -41,13 +41,13 @@ func (b *Backend) Ping() {
 func (b *Backend) updateStatus(isAlive bool) {
 	// Set isAlive
 	if b.Alive.CompareAndSwap(!isAlive, isAlive) {
-		log.Printf("Backend %v is ALIVE: %v", b.ID, isAlive)
+		slog.Info("Backend status update", "backend", b.ID, "alive", isAlive)
 	}
 
 	// Set the breaker back to closed if its open
 	if isAlive && b.CircuitState.CompareAndSwap(stateOpen, stateClosed) {
 		b.ConsecutiveFails.Store(0)
-		log.Printf("Circuit breaker switched to CLOSED for backend %v", b.ID)
+		slog.Info("Circuit breaker switched to CLOSED", "backend", b.ID)
 	}
 }
 

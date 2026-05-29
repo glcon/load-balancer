@@ -1,7 +1,7 @@
 package internal
 
 import (
-	"log"
+	"log/slog"
 	"sync/atomic"
 )
 
@@ -102,7 +102,7 @@ func addNewBackends(reconciled map[string]*Backend, currentSet map[string]*Backe
 			newBackend, err := NewBackend(cfg)
 
 			if err != nil {
-				log.Printf("Could not create a backend for %v\n", cfg.ID)
+				slog.Error("Could not create backend", "backend", cfg.ID, "error", err)
 				continue
 			}
 

@@ -2,7 +2,7 @@ package internal
 
 import (
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -78,9 +78,9 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			fails := backend.ConsecutiveFails.Add(1)
 
 			if fails > 3 {
-				if backend.CircuitState.CompareAndSwap(stateClosed, stateOpen) {
-					log.Printf("Circuit tripped to open for %v", backend.ID)
-				}
+					if backend.CircuitState.CompareAndSwap(stateClosed, stateOpen) {
+						slog.Warn("Circuit tripped to open", "backend", backend.ID)
+					}
 			}
 
 			lastErr = err

@@ -2,7 +2,7 @@ package internal
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sync/atomic"
@@ -105,7 +105,7 @@ func (b *Backend) Drain() {
 
 		select {
 		case <-timeout:
-			log.Printf("Backend %v drain timeout. Forcing close.", b.ID)
+			slog.Warn("Backend drain timeout; forcing close", "backend", b.ID)
 			b.HealthLoopCancel()
 			return
 		case <-ticker.C:
@@ -113,5 +113,5 @@ func (b *Backend) Drain() {
 	}
 
 	b.HealthLoopCancel()
-	log.Printf("Backend %v drained successfully.", b.ID)
+	slog.Info("Backend drained successfully", "backend", b.ID)
 }

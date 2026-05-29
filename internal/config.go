@@ -2,7 +2,7 @@ package internal
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -45,7 +45,7 @@ func StartSignalHandler(ctx context.Context, reg *BackendResigtry, configPath st
 	signal.Notify(sigChan, syscall.SIGHUP)
 
 	go func() {
-		log.Printf("Signal handler initialized. Send SIGHUP to reload config.")
+		slog.Info("Signal handler initialized", "configPath", configPath)
 
 		for {
 			select {
@@ -54,16 +54,16 @@ func StartSignalHandler(ctx context.Context, reg *BackendResigtry, configPath st
 				return
 
 			case <-sigChan:
-				log.Println("SIGHUP received. Reloading config.")
+				slog.Info("SIGHUP received", "configPath", configPath)
 
 				masterConfig, err := LoadConfig(configPath)
 				if err != nil {
-					log.Println("Hot reload FAILED: Could not load config. Previous state preserved.")
+					slog.Error("Hot reload failed: could not load config", "configPath", configPath, "error", err)
 					continue
 				}
 
 				reg.Update(masterConfig.Backends)
-				log.Println("Hot reload SUCCESS: registry updated.")
+				slog.Info("Hot reload success: registry updated", "configPath", configPath)
 			}
 		}
 	}()

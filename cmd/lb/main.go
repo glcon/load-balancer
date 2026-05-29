@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"flag"
-	"log"
 	"net/http"
 	"net/http/httputil"
 	"sync"
@@ -11,10 +10,17 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-    "load-balancer/internal"
+	"load-balancer/internal"
+	"log/slog"
+	"os"
 )
 
 func main() {
+	// initialize global structured logger
+	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{AddSource: true})
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+
 	configPath := flag.String("config", "./config.yml", "Path to the load balancer config file")
 	flag.Parse()
 
@@ -22,11 +28,12 @@ func main() {
 	go func() {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", promhttp.Handler())
-		log.Println("Observability server started on :9090/metrics")
+		slog.Info("Observability server started", "addr", ":9090/metrics")
 
 		err := http.ListenAndServe(":9090", mux)
 		if err != nil {
-			log.Fatalf("Metrics server failed: %v", err)
+			slog.Error("Metrics server failed", "error", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -44,11 +51,12 @@ func main() {
 		WriteTimeout: 10 * time.Second,
 	}
 
-	log.Printf("Load balancer started on :8080\n")
+	slog.Info("Load balancer started", "addr", ":8080")
 
 	err := server.ListenAndServe()
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("Server failed to start", "error", err)
+		os.Exit(1)
 	}
 }
 
@@ -56,15 +64,15 @@ func Startup(ctx context.Context, configPath string) *internal.P2CLB {
 	// Get user config
 	masterConfig, err := internal.LoadConfig(configPath)
 	if err != nil {
-		log.Printf("Failed to load config file")
-		log.Fatal(err)
+		slog.Error("Failed to load config file", "configPath", configPath, "error", err)
+		os.Exit(1)
 	}
 
 	// Establish a registry of backends
 	reg, err := internal.MakeRegistry(masterConfig.Backends)
 	if err != nil {
-		log.Printf("Failed to make the backend registry.")
-		log.Fatal(err)
+		slog.Error("Failed to make the backend registry", "error", err)
+		os.Exit(1)
 	}
 
 	// Start the signal handler for hot swapping
@@ -80,7 +88,7 @@ func Startup(ctx context.Context, configPath string) *internal.P2CLB {
 func EstablishTransport(lb *internal.P2CLB) *httputil.ReverseProxy {
 	// error handler
 	errorFunc := func(w http.ResponseWriter, r *http.Request, err error) {
-		log.Printf("All retry attempts exhausted. Final Proxy Error: %v", err)
+		slog.Error("All retry attempts exhausted. Final Proxy Error", "error", err)
 
 		// Send json to user for error
 		w.Header().Set("Content-Type", "application/json")
