@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"log"
@@ -14,7 +14,7 @@ type Snapshot struct {
 	PointerList []*Backend
 }
 
-func makeRegistry(backendConfigs []BackendConfig) (*BackendResigtry, error) {
+func MakeRegistry(backendConfigs []BackendConfig) (*BackendResigtry, error) {
 	registryMap := make(map[string]*Backend)
 	registryList := make([]*Backend, 0)
 

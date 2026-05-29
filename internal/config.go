@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"context"
@@ -22,7 +22,7 @@ type MasterConfig struct {
 	Backends            []BackendConfig `yaml:"backends"`
 }
 
-func loadConfig(configPath string) (*MasterConfig, error) {
+func LoadConfig(configPath string) (*MasterConfig, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, err
@@ -38,7 +38,7 @@ func loadConfig(configPath string) (*MasterConfig, error) {
 }
 
 // Checks for SIGHUP (signal to hot swap)
-func startSignalHandler(ctx context.Context, reg *BackendResigtry, configPath string) {
+func StartSignalHandler(ctx context.Context, reg *BackendResigtry, configPath string) {
 	// chan for signal to reach goroutine
 	sigChan := make(chan os.Signal, 1)
 
@@ -56,7 +56,7 @@ func startSignalHandler(ctx context.Context, reg *BackendResigtry, configPath st
 			case <-sigChan:
 				log.Println("SIGHUP received. Reloading config.")
 
-				masterConfig, err := loadConfig(configPath)
+				masterConfig, err := LoadConfig(configPath)
 				if err != nil {
 					log.Println("Hot reload FAILED: Could not load config. Previous state preserved.")
 					continue

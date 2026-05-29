@@ -1,11 +1,13 @@
 services:
   balancer:
-    build: .
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
     ports:
       - "8080:8080"
       - "9090:9090"
     volumes:
-      - ./config.yml:/app/config.yml 
+      - ../configs/config.yml:/app/config.yml
     depends_on:
       - backend1
       - backend2

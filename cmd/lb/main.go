@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+    "load-balancer/internal"
 )
 
 func main() {
@@ -50,32 +52,32 @@ func main() {
 	}
 }
 
-func Startup(ctx context.Context, configPath string) *P2CLB {
+func Startup(ctx context.Context, configPath string) *internal.P2CLB {
 	// Get user config
-	masterConfig, err := loadConfig(configPath)
+	masterConfig, err := internal.LoadConfig(configPath)
 	if err != nil {
 		log.Printf("Failed to load config file")
 		log.Fatal(err)
 	}
 
 	// Establish a registry of backends
-	reg, err := makeRegistry(masterConfig.Backends)
+	reg, err := internal.MakeRegistry(masterConfig.Backends)
 	if err != nil {
 		log.Printf("Failed to make the backend registry.")
 		log.Fatal(err)
 	}
 
 	// Start the signal handler for hot swapping
-	startSignalHandler(ctx, reg, configPath)
+	internal.StartSignalHandler(ctx, reg, configPath)
 
-	lb := &P2CLB{
+	lb := &internal.P2CLB{
 		Registry: reg,
 	}
 
 	return lb
 }
 
-func EstablishTransport(lb *P2CLB) *httputil.ReverseProxy {
+func EstablishTransport(lb *internal.P2CLB) *httputil.ReverseProxy {
 	// error handler
 	errorFunc := func(w http.ResponseWriter, r *http.Request, err error) {
 		log.Printf("All retry attempts exhausted. Final Proxy Error: %v", err)
@@ -87,7 +89,7 @@ func EstablishTransport(lb *P2CLB) *httputil.ReverseProxy {
 	}
 
 	globalProxy := &httputil.ReverseProxy{
-		Transport: &Transport{LB: lb},
+		Transport: &internal.Transport{LB: lb},
 		Director: func(req *http.Request) {
 			req.Header.Set("X-Proxy-Source", "balancer")
 		},

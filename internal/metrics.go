@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"github.com/prometheus/client_golang/prometheus"

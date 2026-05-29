@@ -4,7 +4,8 @@ WORKDIR /app
 
 COPY . .
 
-RUN go build -o loadbalancer .
+# Build the load balancer binary from the `cmd/lb` entrypoint
+RUN go build -o loadbalancer ./cmd/lb
 
 EXPOSE 8080 9090
 
