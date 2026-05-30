@@ -8,7 +8,9 @@ func TestRegistryUpdate(t *testing.T) {
 	backendA := testBackend(t, "api-1", "http://127.0.0.1:9001", true, stateClosed, 10)
 	backendB := testBackend(t, "api-2", "http://127.0.0.1:9002", true, stateClosed, 20)
 
-	registry := &BackendRegistry{}
+	registry := &BackendRegistry{
+		healthCheckInterval: 5,
+	}
 	registry.value.Store(&Snapshot{
 		IDMap: map[string]*Backend{
 			backendA.ID: backendA,

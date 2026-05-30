@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
+	_ "net/http/pprof"
 	"os"
 	"sync"
 	"time"
@@ -22,7 +23,15 @@ func main() {
 func run() {
 	initializeLogger()
 
-	configPath := flag.String("config", "./config.yml", "Path to the load balancer config file")
+	go func() {
+		slog.Info("starting pprof server", "port", 6060, "addr", ":6060")
+
+		if err := http.ListenAndServe(":6060", nil); err != nil {
+			slog.Error("pprof server failed to start or crashed", "error", err)
+		}
+	}()
+
+	configPath := flag.String("config", "./configs/config.yml", "Path to the load balancer config file")
 	flag.Parse()
 
 	startMetricsServer()
