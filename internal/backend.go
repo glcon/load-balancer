@@ -37,7 +37,7 @@ type Backend struct {
 	HealthLoopCancel context.CancelFunc
 }
 
-func NewBackend(cfg BackendConfig) (*Backend, error) {
+func NewBackend(cfg BackendConfig, healthCheckInterval int) (*Backend, error) {
 	target, err := url.Parse(cfg.URL)
 	if err != nil {
 		return nil, err
@@ -64,7 +64,7 @@ func NewBackend(cfg BackendConfig) (*Backend, error) {
 	}
 
 	// Run the backend's personal health checking loop
-	go healthLoop(ctx, b, 5*time.Second)
+	go healthLoop(ctx, b, time.Duration(healthCheckInterval)*time.Second)
 
 	return b, nil
 }

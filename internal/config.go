@@ -38,7 +38,7 @@ func LoadConfig(configPath string) (*MasterConfig, error) {
 }
 
 // Checks for SIGHUP (signal to hot swap)
-func StartSignalHandler(ctx context.Context, reg *BackendResigtry, configPath string) {
+func StartSignalHandler(ctx context.Context, reg *BackendRegistry, configPath string) {
 	// chan for signal to reach goroutine
 	sigChan := make(chan os.Signal, 1)
 

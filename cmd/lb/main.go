@@ -3,28 +3,45 @@ package main
 import (
 	"context"
 	"flag"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"load-balancer/internal"
-	"log/slog"
-	"os"
 )
 
 func main() {
-	// initialize global structured logger
-	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{AddSource: true})
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
+	run()
+}
+
+func run() {
+	initializeLogger()
 
 	configPath := flag.String("config", "./config.yml", "Path to the load balancer config file")
 	flag.Parse()
 
-	// start prometheus
+	startMetricsServer()
+
+	ctx, signalHandlerCancel := context.WithCancel(context.Background())
+	defer signalHandlerCancel()
+
+	lb := startup(ctx, *configPath)
+
+	serve(newServer(establishTransport(lb)))
+}
+
+func initializeLogger() {
+	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{AddSource: true})
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+}
+
+func startMetricsServer() {
 	go func() {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", promhttp.Handler())
@@ -36,40 +53,16 @@ func main() {
 			os.Exit(1)
 		}
 	}()
-
-	ctx, signalHandlerCancel := context.WithCancel(context.Background())
-	defer signalHandlerCancel()
-
-	lb := Startup(ctx, *configPath)
-
-	globalProxy := EstablishTransport(lb)
-
-	server := &http.Server{
-		Addr:         ":8080",
-		Handler:      globalProxy,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
-	}
-
-	slog.Info("Load balancer started", "addr", ":8080")
-
-	err := server.ListenAndServe()
-	if err != nil {
-		slog.Error("Server failed to start", "error", err)
-		os.Exit(1)
-	}
 }
 
-func Startup(ctx context.Context, configPath string) *internal.P2CLB {
-	// Get user config
+func startup(ctx context.Context, configPath string) *internal.P2CLB {
 	masterConfig, err := internal.LoadConfig(configPath)
 	if err != nil {
 		slog.Error("Failed to load config file", "configPath", configPath, "error", err)
 		os.Exit(1)
 	}
 
-	// Establish a registry of backends
-	reg, err := internal.MakeRegistry(masterConfig.Backends)
+	reg, err := internal.MakeRegistry(masterConfig)
 	if err != nil {
 		slog.Error("Failed to make the backend registry", "error", err)
 		os.Exit(1)
@@ -85,12 +78,10 @@ func Startup(ctx context.Context, configPath string) *internal.P2CLB {
 	return lb
 }
 
-func EstablishTransport(lb *internal.P2CLB) *httputil.ReverseProxy {
-	// error handler
+func establishTransport(lb *internal.P2CLB) *httputil.ReverseProxy {
 	errorFunc := func(w http.ResponseWriter, r *http.Request, err error) {
 		slog.Error("All retry attempts exhausted. Final Proxy Error", "error", err)
 
-		// Send json to user for error
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
 		w.Write([]byte(`{"error": "Bad Gateway", "message": "All backends failed to respond."}`))
@@ -106,6 +97,25 @@ func EstablishTransport(lb *internal.P2CLB) *httputil.ReverseProxy {
 	}
 
 	return globalProxy
+}
+
+func newServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:         ":8080",
+		Handler:      handler,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+}
+
+func serve(server *http.Server) {
+	slog.Info("Load balancer started", "addr", ":8080")
+
+	err := server.ListenAndServe()
+	if err != nil {
+		slog.Error("Server failed to start", "error", err)
+		os.Exit(1)
+	}
 }
 
 // byte pools that the proxy can reuse

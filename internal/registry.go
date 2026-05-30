@@ -1,12 +1,14 @@
 package internal
 
 import (
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 )
 
-type BackendResigtry struct {
-	value atomic.Value // Always of type Snapshot
+type BackendRegistry struct {
+	value               atomic.Value // Always of type Snapshot
+	healthCheckInterval int
 }
 
 type Snapshot struct {
@@ -14,12 +16,16 @@ type Snapshot struct {
 	PointerList []*Backend
 }
 
-func MakeRegistry(backendConfigs []BackendConfig) (*BackendResigtry, error) {
+func MakeRegistry(masterConfig *MasterConfig) (*BackendRegistry, error) {
+	if masterConfig.HealthCheckInterval < 1 {
+		return nil, fmt.Errorf("health_check_interval must be at least 1 second")
+	}
+
 	registryMap := make(map[string]*Backend)
 	registryList := make([]*Backend, 0)
 
-	for _, cfg := range backendConfigs {
-		b, err := NewBackend(cfg)
+	for _, cfg := range masterConfig.Backends {
+		b, err := NewBackend(cfg, masterConfig.HealthCheckInterval)
 		if err != nil {
 			return nil, err
 		}
@@ -28,7 +34,8 @@ func MakeRegistry(backendConfigs []BackendConfig) (*BackendResigtry, error) {
 		registryList = append(registryList, b)
 	}
 
-	reg := &BackendResigtry{}
+	reg := &BackendRegistry{}
+	reg.healthCheckInterval = masterConfig.HealthCheckInterval
 
 	s := &Snapshot{
 		IDMap:       registryMap,
@@ -40,33 +47,34 @@ func MakeRegistry(backendConfigs []BackendConfig) (*BackendResigtry, error) {
 	return reg, nil
 }
 
-func (reg *BackendResigtry) Update(newConfigs []BackendConfig) {
-	snapShot := reg.value.Load().(*Snapshot)
-	currentSet := snapShot.IDMap
+func (reg *BackendRegistry) Update(newConfigs []BackendConfig) {
+	snapshot := reg.value.Load().(*Snapshot)
+	current := snapshot.IDMap
 
 	// copy that will be returned once finished
-	reconciledMap := make(map[string]*Backend, len(currentSet))
-	for k, v := range currentSet {
-		reconciledMap[k] = v
+	next := make(map[string]*Backend, len(current))
+	for id, backend := range current {
+		next[id] = backend
 	}
 
-	// Edit reconciled list
-	addNewBackends(reconciledMap, currentSet, newConfigs)
-	orphans := identifyOrphans(reconciledMap, currentSet, newConfigs)
+	reg.addNewBackends(next, current, newConfigs)
+
+	// Deletes orphans from reconciled list and returns a list of them
+	orphans := identifyOrphans(next, current, newConfigs)
 
 	// build standard list to store in snapshot
-	reconciledList := make([]*Backend, 0)
-	for _, backend := range reconciledMap {
-		reconciledList = append(reconciledList, backend)
+	pointerList := make([]*Backend, 0, len(next))
+	for _, backend := range next {
+		pointerList = append(pointerList, backend)
 	}
 
-	s := &Snapshot{
-		IDMap:       reconciledMap,
-		PointerList: reconciledList,
+	updatedSnapshot := &Snapshot{
+		IDMap:       next,
+		PointerList: pointerList,
 	}
 
 	// hot swap
-	reg.value.Store(s)
+	reg.value.Store(updatedSnapshot)
 
 	// start shutting down AFTER the new registry is live
 	for _, orphan := range orphans {
@@ -94,12 +102,12 @@ func identifyOrphans(reconciled map[string]*Backend, currentSet map[string]*Back
 	return orphans
 }
 
-func addNewBackends(reconciled map[string]*Backend, currentSet map[string]*Backend, newConfigs []BackendConfig) {
+func (reg *BackendRegistry) addNewBackends(reconciled map[string]*Backend, currentSet map[string]*Backend, newConfigs []BackendConfig) {
 	for _, cfg := range newConfigs {
 		_, ok := currentSet[cfg.ID]
 
 		if ok == false {
-			newBackend, err := NewBackend(cfg)
+			newBackend, err := NewBackend(cfg, reg.healthCheckInterval)
 
 			if err != nil {
 				slog.Error("Could not create backend", "backend", cfg.ID, "error", err)

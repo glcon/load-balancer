@@ -5,7 +5,7 @@ import (
 )
 
 type P2CLB struct {
-	Registry *BackendResigtry
+	Registry *BackendRegistry
 }
 
 func (p *P2CLB) SelectBackend() *Backend {

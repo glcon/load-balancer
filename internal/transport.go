@@ -60,10 +60,10 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			resp, err = backend.Transport.RoundTrip(attemptReq)
 		}()
 
-		latency := time.Since(start).Milliseconds() // returns an int64!!!!!
+		latency := time.Since(start).Seconds()
 
 		// latency histogram
-		MetricsRequestDuration.WithLabelValues(backend.ID).Observe(float64(latency))
+		MetricsRequestDuration.WithLabelValues(backend.ID).Observe(latency)
 
 		if err != nil || isSoftFailure(resp) {
 			if resp != nil {
@@ -78,9 +78,9 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			fails := backend.ConsecutiveFails.Add(1)
 
 			if fails > 3 {
-					if backend.CircuitState.CompareAndSwap(stateClosed, stateOpen) {
-						slog.Warn("Circuit tripped to open", "backend", backend.ID)
-					}
+				if backend.CircuitState.CompareAndSwap(stateClosed, stateOpen) {
+					slog.Warn("Circuit tripped to open", "backend", backend.ID)
+				}
 			}
 
 			lastErr = err
@@ -91,7 +91,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 		// reaching here means success
 		backend.ConsecutiveFails.Store(0)
-		backend.UpdateEWMA(latency)
+		backend.UpdateEWMA(int64(latency))
 		backend.LastRequest.Store(time.Now().UnixMilli())
 		backend.TotalRequests.Add(1)
 
