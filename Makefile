@@ -1,4 +1,4 @@
-.PHONY: help clean run build test lint benchmark infra-up infra-down
+.PHONY: help clean run build test infra-up infra-down
 
 # Configuration
 APP_NAME := lb

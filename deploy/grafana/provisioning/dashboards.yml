@@ -1,0 +1,12 @@
+apiVersion: 1
+providers:
+  - name: 'Default Dashboards'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    # How often Grafana will scan for changed dashboards
+    updateIntervalSeconds: 10
+    options:
+      # Path matched to the volume mount in docker-compose.yml
+      path: /var/lib/grafana/dashboards
