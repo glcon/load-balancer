@@ -31,6 +31,12 @@ backends:
 	if loaded.ListenAddr != ":8080" {
 		t.Fatalf("ListenAddr = %q, want %q", loaded.ListenAddr, ":8080")
 	}
+	if loaded.MetricsAddr != ":9090" {
+		t.Fatalf("MetricsAddr = %q, want %q", loaded.MetricsAddr, ":9090")
+	}
+	if loaded.PprofAddr != ":6060" {
+		t.Fatalf("PprofAddr = %q, want %q", loaded.PprofAddr, ":6060")
+	}
 	if loaded.HealthCheckInterval != 7 {
 		t.Fatalf("HealthCheckInterval = %d, want %d", loaded.HealthCheckInterval, 7)
 	}

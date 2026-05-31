@@ -18,6 +18,8 @@ type BackendConfig struct {
 // stuff straight from yml file
 type MasterConfig struct {
 	ListenAddr          string          `yaml:"listen_addr"`
+	MetricsAddr         string          `yaml:"metrics_addr"`
+	PprofAddr           string          `yaml:"pprof_addr"`
 	HealthCheckInterval int             `yaml:"health_check_interval"`
 	Backends            []BackendConfig `yaml:"backends"`
 }
@@ -28,7 +30,11 @@ func LoadConfig(configPath string) (*MasterConfig, error) {
 		return nil, err
 	}
 
-	var cfg MasterConfig
+	cfg := MasterConfig{
+		ListenAddr:  ":8080",
+		MetricsAddr: ":9090",
+		PprofAddr:   ":6060",
+	}
 	err = yaml.Unmarshal(data, &cfg)
 	if err != nil {
 		return nil, err

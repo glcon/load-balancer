@@ -43,7 +43,7 @@ test:
 ## infra-up: Spin up Docker infrastructure
 infra-up:
 	@echo "Starting infrastructure..."
-	@cd deploy && docker compose up -d
+	@cd deploy && docker compose up --build -d
 
 ## infra-down: Tear down Docker infrastructure
 infra-down:

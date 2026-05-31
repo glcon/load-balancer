@@ -60,7 +60,8 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			resp, err = backend.Transport.RoundTrip(attemptReq)
 		}()
 
-		latency := time.Since(start).Seconds()
+		duration := time.Since(start)
+		latency := duration.Seconds()
 
 		// latency histogram
 		MetricsRequestDuration.WithLabelValues(backend.ID).Observe(latency)
@@ -91,7 +92,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 		// reaching here means success
 		backend.ConsecutiveFails.Store(0)
-		backend.UpdateEWMA(int64(latency))
+		backend.UpdateEWMA(duration.Milliseconds())
 		backend.LastRequest.Store(time.Now().UnixMilli())
 		backend.TotalRequests.Add(1)
 

@@ -23,25 +23,31 @@ func main() {
 func run() {
 	initializeLogger()
 
-	go func() {
-		slog.Info("starting pprof server", "port", 6060, "addr", ":6060")
+	configPath := flag.String("config", "./configs/config.yml", "Path to the load balancer config file")
+	flag.Parse()
 
-		if err := http.ListenAndServe(":6060", nil); err != nil {
+	masterConfig, err := internal.LoadConfig(*configPath)
+	if err != nil {
+		slog.Error("Failed to load config file", "configPath", *configPath, "error", err)
+		os.Exit(1)
+	}
+
+	go func() {
+		slog.Info("starting pprof server", "addr", masterConfig.PprofAddr)
+
+		if err := http.ListenAndServe(masterConfig.PprofAddr, nil); err != nil {
 			slog.Error("pprof server failed to start or crashed", "error", err)
 		}
 	}()
 
-	configPath := flag.String("config", "./configs/config.yml", "Path to the load balancer config file")
-	flag.Parse()
-
-	startMetricsServer()
+	startMetricsServer(masterConfig.MetricsAddr)
 
 	ctx, signalHandlerCancel := context.WithCancel(context.Background())
 	defer signalHandlerCancel()
 
-	lb := startup(ctx, *configPath)
+	lb := startup(ctx, *configPath, masterConfig)
 
-	serve(newServer(establishTransport(lb)))
+	serve(newServer(masterConfig.ListenAddr, establishTransport(lb)), masterConfig.ListenAddr)
 }
 
 func initializeLogger() {
@@ -50,13 +56,13 @@ func initializeLogger() {
 	slog.SetDefault(logger)
 }
 
-func startMetricsServer() {
+func startMetricsServer(addr string) {
 	go func() {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", promhttp.Handler())
-		slog.Info("Observability server started", "addr", ":9090/metrics")
+		slog.Info("Observability server started", "addr", addr+"/metrics")
 
-		err := http.ListenAndServe(":9090", mux)
+		err := http.ListenAndServe(addr, mux)
 		if err != nil {
 			slog.Error("Metrics server failed", "error", err)
 			os.Exit(1)
@@ -64,13 +70,7 @@ func startMetricsServer() {
 	}()
 }
 
-func startup(ctx context.Context, configPath string) *internal.P2CLB {
-	masterConfig, err := internal.LoadConfig(configPath)
-	if err != nil {
-		slog.Error("Failed to load config file", "configPath", configPath, "error", err)
-		os.Exit(1)
-	}
-
+func startup(ctx context.Context, configPath string, masterConfig *internal.MasterConfig) *internal.P2CLB {
 	reg, err := internal.MakeRegistry(masterConfig)
 	if err != nil {
 		slog.Error("Failed to make the backend registry", "error", err)
@@ -108,17 +108,17 @@ func establishTransport(lb *internal.P2CLB) *httputil.ReverseProxy {
 	return globalProxy
 }
 
-func newServer(handler http.Handler) *http.Server {
+func newServer(addr string, handler http.Handler) *http.Server {
 	return &http.Server{
-		Addr:         ":8080",
+		Addr:         addr,
 		Handler:      handler,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
 }
 
-func serve(server *http.Server) {
-	slog.Info("Load balancer started", "addr", ":8080")
+func serve(server *http.Server, addr string) {
+	slog.Info("Load balancer started", "addr", addr)
 
 	err := server.ListenAndServe()
 	if err != nil {
