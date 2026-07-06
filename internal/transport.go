@@ -29,10 +29,16 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			return nil, errors.New("503: no backends available")
 		}
 
-		// dynamic routing
-		attemptReq := req.Clone(req.Context())
-		attemptReq.URL.Scheme = backend.URL.Scheme
-		attemptReq.URL.Host = backend.URL.Host
+		// Shallow-copy the request struct and the URL struct so we can set the
+		// target backend without mutating the caller's request (required by the
+		// http.RoundTripper contract). This avoids the full header-map allocation
+		// that req.Clone() performs on every request.
+		urlCopy := *req.URL
+		urlCopy.Scheme = backend.URL.Scheme
+		urlCopy.Host = backend.URL.Host
+
+		attemptReq := *req
+		attemptReq.URL = &urlCopy
 		attemptReq.Host = backend.URL.Host
 
 		if attempt > 0 && req.Body != nil && req.GetBody != nil {
@@ -41,7 +47,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 				return nil, err
 			}
 
-			req.Body = newBody
+			attemptReq.Body = newBody
 		}
 
 		start := time.Now()
@@ -57,7 +63,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			MetricsActiveConnections.WithLabelValues(backend.ID).Inc()
 			defer MetricsActiveConnections.WithLabelValues(backend.ID).Dec()
 
-			resp, err = backend.Transport.RoundTrip(attemptReq)
+			resp, err = backend.Transport.RoundTrip(&attemptReq)
 		}()
 
 		duration := time.Since(start)
