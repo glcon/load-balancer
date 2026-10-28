@@ -1,6 +1,6 @@
 # P2C Load Balancer
 
-A high-performance, concurrent Layer 7 load balancer written in Go. Designed with heavy traffic distribution algorithms (Power of Two Choices + EWMA), active jittered health monitoring, a fully observable metrics pipeline, and backend hot swapping.
+A concurrent Layer 7 load balancer written in Go. Designed with Power of Two Choices, EWMA latency scoring, active health checks, per-backend circuit breaking, Prometheus metrics, and backend membership reloads via SIGHUP.
 
 
 ## Architecture & Design
@@ -11,13 +11,13 @@ graph TD
 
     subgraph LB Core
         LB --> RT[Transport / RoundTripper]
-        RT -->|Handles up to 3 Retries| P2C{Power of 2 Choices}
-        P2C -->|Picks 2 Healthy Nodes| EWMA[Compare EWMA Latency]
+        RT -->|GET/HEAD: up to 3 attempts; others: 1| P2C{Power of 2 Choices}
+        P2C -->|Samples 2 nodes; checks availability| EWMA[Prefer lower stored EWMA when both available]
         EWMA -->|Routes Request| Fleet
         
-        RT -.->|Trips Circuit Breaker on Failures| P2C
+        RT -.->|Opens breaker after 3 consecutive failures| P2C
         
-        HC[Health Checker] -.->|Async Jittered Probes| Fleet
+        HC[Health Checker] -.->|Periodic probes with startup jitter| Fleet
         HC -.->|Resets Breaker & Updates Status| P2C
     end
 
@@ -32,69 +32,68 @@ graph TD
 ```
 
 ### 1. Power of Two Choices (P2C) with EWMA
-Instead of traditional Round Robin or pure Least Connections (which often leads to a "thundering herd" problem), the balancer routes traffic using the **power of two choices** algorithm. For every request, the LB randomly selects two healthy backends, computes an **exponentially weighted moving average** of request latencies for both, and chooses the one with the faster response time. This ensures latency spikes are smoothed out and the LB reacts to recent, sustained degradation rather than micro-spikes.
+This balancer uses a **power of two choices** algorithm. For every request, the LB randomly selects two healthy backends, computes an **exponentially weighted moving average** of request latencies for both, and chooses the one with the faster response time. This ensures latency spikes are smoothed out and the LB reacts to actual degradation rather than micro-spikes.
 
 ### 2. Active Health Checking
-Each backend has an `Alive` variable that is managed by its own active health-checker, a goroutine that periodically determines whether it is able to properly receive requests. If it fails a check, the variable is set and the selection algorithm ignores that backend. It will remain out of the pool until it returns a `200 OK` to the health-checker. Additionally, to prevent overwhelming backends on startup, the `healthLoop` implements randomized jitter (up to 3 seconds) before initiating the first probe. 
+Each backend has a health-check goroutine that requests `/health` with a 500 ms timeout. If it fails a check, it is marked as unavailable. It will remain out of the pool until it returns a `2xx` to the health-checker. 
+
+Additionally, to prevent overwhelming backends on startup, the `healthLoop` implements randomized jitter (up to 3 seconds) before initiating the first probe. 
 
 Active health checks are essential for reintroducing backends that have been taken out of the selection pool. Pinging backends that haven't seen traffic in a while is also a great way to ensure they haven't become inoperative in the background.
 
 ### 3. Circuit Breaking & Transparent Retries
-Each backend also has a `CircuitState` variable that is managed by my custom implementation of `http.RoundTrip`. On each attempt, the function creates a shallow copy of the request and routes it to the selected backend. If a backend fails 3 times, `CircuitState` is set to `stateOpen` and the selection algorithm will run once more. 
+If a backend fails 3 times, its `CircuitState` value is set to `stateOpen`, preventing it from receiving traffic until it is determined healthy again by its health routine. HTTP 500 isn't counted because it is often an application-level error, rather than an unhealthy backend -- this can be configured.
 
-After 3 retries (not to be confused with individual backend fails), the user's request will gracefully error out and be sent to the standard logger. This process ensures that one faulty backend doesn't cause a request to fail immediately and makes the process relatively seamless for the user.
+After 3 attempts at backend selection, the user's request will  error out and be sent to the standard logger. This process ensures that hitting a faulty backend doesn't cause the request to fail immediately.
 
-It is also very important to only retry idempotent requests (those that don't change the state of the system, regardless of how many times they are made). If we allow a `POST`, for example, to retry, it might go through twice. Depending on your application, this could cause undesirable behavior, such as charging a user's credit card twice.
+It is also very important to only retry idempotent requests. If we allow a `POST` to retry, it might go through twice, and if the action it performs happens to be charging a credit card, for example, that introduces major problems.
 
 ### 4. Hot Swapping
-This load balancer supports hot swapping as well. Sending a `SIGHUP` to the program will cause it to update the list of backends to match `config.yml`'s state at that time. This is done via an atomic pointer swap to prevent lock contention. When a backend is removed, the balancer allows its current connections to drain before removing it from the registry completely, preventing user requests from being dropped unnecessarily.
+Sending a `SIGHUP` to the program will cause it to update the list of backends to match `config.yml`'s state at that time without restarting the listener.
 
-Allowing backends to be removed and added without taking the balancer itself down is incredibly important in production environments; even a few seconds of balancer downtime could lead to thousands of dropped connections depending on throughput.
+Removed backends are excluded from the registry immediately, and a background cleanup routine waits for header responses to drop to 0 before stopping the health checking routine. Note: Response bodies might not have finished streaming, and conenctions are not forcibly closed.
 
 ### 5. Avoidance of Mutex Use
-The balancer's core routing state was intentionally designed to be lock-free, and thus avoids mutexes when possible. If two goroutines fight over a mutex, the losing goroutine is suspended by the Go scheduler and the OS has to do a thread context switch, which is expensive. To modify values in the hot path, atomics are used instead -- they use low-level CPU instructions to modify memory without descheduling the thread, which saves a ton of overhead.
+The balancer's core routing state was designed to avoid application level mutexes during backend selection. If two goroutines fight over a mutex, the losing goroutine is suspended by the Go scheduler and the OS often has to context switch, which is expensive. To modify values in the hot path, atomics are used instead -- they use low-level CPU instructions to modify memory without descheduling the thread, which saves overhead.
 
-Mutexes will indeed show up on the CPU profile, though, as connection pooling, Prometheus, etc. still need to use them.
+Mutexes will still show up on the CPU profile, though, as connection pooling, Prometheus, etc. still need to use them.
 
 ## Benchmarks
-
-I used several benchmarking tools to ensure that the hot path was as lock-free and efficient as possible. 
-
-**Note**: Because the load generator, balancer, and backends are all being run on the same computer, they are actively competing for the same CPU cycles and network stack resources, so the LB's true limits aren't what's being tested here. If I wanted to do that, I'd run all 3 components on different devices and connect them via ethernet or thunderbolt 4.
-
-Regardless, we can still confirm that the CPU is not the bottleneck and get some baseline numbers.
+I used `hey`, Go’s profiling tools, and Grafana to measure throughput and latency, investigate CPU and allocation costs, and observe traffic distribution across backends. Since the load generator, balancer, and backends were all run on the same computer, the measurements aren't representative of the balancer's maximum capacity.
 
 ### Throughput & Latency (`hey`)
-`hey` is an open-source load testing tool created by [@rakyll](https://github.com/rakyll). We can run the command below to simulate 300 concurrent workers sending in a total of 300000 requests. 
+We can run the `hey` command below to simulate 300 concurrent workers sending in a total of 300000 requests. 
 
 ```bash
 hey -n 300000 -c 300 http://localhost:8080/
 ```
 
-I was able to get about ~40k RPS with a ~20ms p99 latency on average across 10 trial runs, one of which is shown below.
+I was able to achieve  about ~40k RPS with a ~20ms p99 latency on average across 10 trial runs, one of which is shown below.
 
 ![Hey Benchmark](./assets/benchmark.png)
 
-### CPU & Goroutine Profiling (`pprof`)
-`pprof` is Go's native profiling tool that collects runtime data like CPU usage, memory allocations, and goroutine blockages. A flame graph of CPU usage is shown below.
+### CPU & Goroutine Profiling
+I used `pprof` to investigate where the balancer spends CPU time under load. In the flame graph below, wider frames represent more used CPU time, which also includes time spent in the functions they called.
 
 ![pprof Flame Graph](./assets/flamegraph.png)
 
-Upon examination, we can see that the balancer is largely I/O bound -- `syscall.Syscall6`, `bufio.Writer.Flush`, and `net.conn.Write` dominate CPU time, which is expected for a proxy doing twice the socket work of a direct connection. The application logic does not appear as a visible CPU consumer, which confirms that the hot path is efficient.
+The image below details the top 10 functions by CPU usage time.
 
-Something that stuck out, though, was `runtime.mallocgc` at 8%, which made me look deeper into the alloc profile. It turns out that `httputil.ReverseProxy` is mostly responsible for this, as it deeply clones requests internally. This is an unavoidable cost of using Go's proxy library -- as far as an L7 LB goes, this one is (roughly) at the floor for allocs.
+![Top 10 Flat](./assets/top10_flat.png)
+
+We can see that HTTP transport, network-write paths, and runtime scheduling account for the largest portions of the profile. This shows that my backend selection logic is not a prominent CPU user in this usage capture -- the profile is very consistent with the standard overhead of receiving and forwarding HTTP traffic.
 
 ### Observability (Grafana)
-Every routing decision and health status change also exports Prometheus metrics. The included dashboard shows 6 critical statistics: traffic distribution per backend, HTTP 5xx error rate, active connections per backend, total requests per second, p99 latency per backend, and overall average system latency.
+Every routing decision also reports metrics. The included dashboard shows 6 critical statistics: traffic distribution per backend, HTTP 5xx error rate, active connections per backend, total requests per second, p99 latency per backend, and overall average system latency.
 
 ![Grafana Dashboard](./assets/dashboard.png)
 
 ## Run It Yourself
 
 ### Prerequisites
-- **Go 1.21+** — [golang.org/dl](https://golang.org/dl/)
-- **Make** — pre-installed on macOS and Linux; Windows users should use WSL
-- **Docker with the Compose plugin** — [Docker Desktop](https://www.docker.com/products/docker-desktop/) includes this on macOS and Windows; Linux users see the [Compose plugin install guide](https://docs.docker.com/compose/install/linux/)
+- **Go 1.21+**
+- **Make** — Windows users should use WSL
+- **Docker with the Compose plugin**
 
 ### Running Locally
 1. Clone the repository and download dependencies:

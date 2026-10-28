@@ -84,7 +84,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 			fails := backend.ConsecutiveFails.Add(1)
 
-			if fails > 3 {
+			if fails > 2 {
 				if backend.CircuitState.CompareAndSwap(stateClosed, stateOpen) {
 					slog.Warn("Circuit tripped to open", "backend", backend.ID)
 				}
