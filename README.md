@@ -51,7 +51,7 @@ It is also very important to only retry idempotent requests. If we allow a `POST
 ### 4. Hot Swapping
 Sending a `SIGHUP` to the program will cause it to update the list of backends to match `config.yml`'s state at that time without restarting the listener.
 
-Removed backends are excluded from the registry immediately, and a background cleanup routine waits for header responses to drop to 0 before stopping the health checking routine. Note: Response bodies might not have finished streaming, and conenctions are not forcibly closed.
+Removed backends are excluded from the registry immediately, and a background cleanup routine waits for header responses to drop to 0 before stopping the health checking routine.
 
 ### 5. Avoidance of Mutex Use
 The balancer's core routing state was designed to avoid application level mutexes during backend selection. If two goroutines fight over a mutex, the losing goroutine is suspended by the Go scheduler and the OS often has to context switch, which is expensive. To modify values in the hot path, atomics are used instead -- they use low-level CPU instructions to modify memory without descheduling the thread, which saves overhead.
@@ -151,7 +151,6 @@ backends:
   # ... Add as many targets as needed
 ```
 
-## Future Improvements
-- **Layer 4 (TCP) Balancing:** Right now, this is strictly an L7 balancer. I'd love to drop down a level and add raw socket routing capabilities to handle arbitrary TCP traffic as well.
-- **Dynamic Service Discovery:** While the hot-swapping feature works well, integrating with something like Consul or etcd would allow backends to dynamically register and deregister themselves so I don't have to touch the `config.yml` at all.
-- **Consistent Hashing:** It would be great to introduce a routing strategy based on client headers or IPs to guarantee sticky sessions. This would be incredibly useful for specific tenants that need to always hit the same backend state or cache.
+## Known Limitations
+- When backends are drained, the balancer doesn't wait for response bodies to finish streaming; moreover, connections are not forcibly closed when the time limit expires.
+- Health checks don't update latency, so backends that have high EWMA latency readings will tend to be constantly ignored by the routing algortihm, even if their latencies imporve.
